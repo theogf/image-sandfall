@@ -3,6 +3,7 @@ using Colors
 using Colors: N0f8
 using Random
 using FileIO
+using VideoIO
 
 @enum CellType::UInt8 Empty Sand Block
 @enum Direction Down Up Left Right
@@ -11,7 +12,31 @@ const EMPTY_COLOR = RGB{N0f8}(1, 1, 1)
 const BLOCK_COLOR = RGB{N0f8}(0, 0, 0)
 
 const file = "mario.jpg"
-const img = load(file)
+const use_webcam = true # take the image from the webcam instead of `file`; press space to retake it
+const mirror_webcam = true
+
+# Take one picture with the first camera (/dev/video0)
+function capture_webcam(; attempts = 3)
+  # Opening the camera occasionally fails while the device is still busy
+  cam = nothing
+  for k in 1:attempts
+    try
+      cam = VideoIO.opencamera()
+      break
+    catch
+      k == attempts && rethrow()
+      sleep(0.5)
+    end
+  end
+  for _ in 1:10 # skip the first frames while the camera adjusts its exposure
+    read(cam)
+  end
+  frame = read(cam)
+  close(cam)
+  return mirror_webcam ? reverse(frame; dims = 2) : collect(frame)
+end
+
+const img = use_webcam ? capture_webcam() : load(file)
 const nrows, ncols = size(img)
 
 const offset = 50 # empty cells between the image and the border, on every side
@@ -34,18 +59,25 @@ const pixels = fill(EMPTY_COLOR, nx, ny)
 
 # Initialization
 in_gap(i, n) = initial_gap && div(n, 3) < i < 2 * div(n, 3)
-for j in 1:ncols, i in 1:nrows
-  x = block_width + offset + j
-  y = ny - offset - i + 1
-  kinds[x, y] = Sand
-  pixels[x, y] = img[i, j]
-end
-for x in 1:nx, y in 1:ny
-  if (y <= block_width && !in_gap(x, nx)) || (x <= block_width && !in_gap(y, ny))
-    kinds[x, y] = Block
-    pixels[x, y] = BLOCK_COLOR
+function init!(kinds, pixels, img)
+  size(img) == (nrows, ncols) || error("the image must stay $(nrows)x$(ncols), got $(size(img))")
+  fill!(kinds, Empty)
+  fill!(pixels, EMPTY_COLOR)
+  for j in 1:ncols, i in 1:nrows
+    x = block_width + offset + j
+    y = ny - offset - i + 1
+    kinds[x, y] = Sand
+    pixels[x, y] = img[i, j]
   end
+  for x in 1:nx, y in 1:ny
+    if (y <= block_width && !in_gap(x, nx)) || (x <= block_width && !in_gap(y, ny))
+      kinds[x, y] = Block
+      pixels[x, y] = BLOCK_COLOR
+    end
+  end
+  kinds
 end
+init!(kinds, pixels, img)
 
 # View of `A` in which gravity pulls towards lower second indices, like `Down` does for `A`
 function oriented(A::AbstractMatrix, gravity::Direction)
@@ -121,10 +153,15 @@ hidespines!(ax)
 image!(ax, colors; interpolate = false)
 tightlimits!(ax)
 
-# Change the direction of gravity with the arrow keys
+# Change the direction of gravity with the arrow keys, retake the picture with space
 on(events(fig).keyboardbutton) do event
-  if event.action == Keyboard.press && haskey(arrow_directions, event.key)
+  event.action == Keyboard.press || return
+  if haskey(arrow_directions, event.key)
     gravity[] = arrow_directions[event.key]
+  elseif event.key == Keyboard.space && use_webcam
+    init!(kinds, pixels, capture_webcam())
+    t[] = 0
+    notify(colors)
   end
 end
 
